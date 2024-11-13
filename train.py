@@ -28,7 +28,10 @@ if __name__ == "__main__":
     safe_state(args.quite)
 
     # Start GUI server, configure and run training
+    if not args.disable_viewer:
+        network_gui.init(args.ip, args.port)
     # ...
+    
 
     # All done
     print("\nTraining complete.")
