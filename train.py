@@ -2,6 +2,7 @@ import sys
 from argparse import ArgumentParser
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
+from utils.general_utils import safe_state
 
 if __name__ == "__main__":
     #set up command line argument parser
@@ -24,7 +25,7 @@ if __name__ == "__main__":
     print("Optimizing" + args.model_path)
 
     # Initialize system state (RNG)
-    # ...
+    safe_state(args.quite)
 
     # Start GUI server, configure and run training
     # ...
