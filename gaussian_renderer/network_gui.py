@@ -26,7 +26,7 @@ def try_connect():
     global conn, addr, listener
     try:
         conn, addr = listener.accept()
-        print(f"\nConnected by {addr}")
+        print(f"\nConnected by {addr}") # 格式化字符串，可以直接插入表达式
         conn.settimeout(None)
     # 错误会被忽略
     except Exception as inst:
