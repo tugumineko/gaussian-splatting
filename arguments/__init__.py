@@ -77,7 +77,7 @@ class OptimizationParams(ParamGroup):
         self.iterations = 30_000 # 优化算法要执行的总迭代次数
         self.position_lr_init = 0.00016 # 初始位置学习率
         self.position_lr_final = 0.0000016 # 最后位置学习率，优化过程中学习率通常会不断减小
-        self.position_lr_delay_mult = 0.01 # 学习率延迟乘数
+        self.position_lr_delay_mult = 0.01 # 学习率延迟乘数，用于warm up，降低初始学习率以加快收敛
         self.position_lr_max_steps = 30_000 # 指定位置学习率最大步骤
         self.feature_lr = 0.0025
         self.opacity_lr = 0.005

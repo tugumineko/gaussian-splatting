@@ -1,9 +1,12 @@
 import numpy as np
 import torch
+from torch import nn
 
-from utils.general_utils import build_scaling_rotation, strip_symmetric, inverse_sigmoid
+from arguments import OptimizationParams
+from utils.general_utils import build_scaling_rotation, strip_symmetric, inverse_sigmoid, get_expon_lr_func
 from utils.graphics_utils import BasicPointCloud
 from utils.sh_utils import RGB2SH
+from simple_knn._C import distCUDA2 # 未实现cuda
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
@@ -139,4 +142,57 @@ class GaussianModel:
         features[:,3:,1:] = 0.0 # emphasize,actually redundant
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-        # ...
+
+        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),0.0000001) # clamp避免除0错误
+        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1,3) # 得到形状为(n,3)的张量
+        rots = torch.zeros((fused_point_cloud.shape[0],4),device="cuda")
+        rots[:,0] = 1
+
+        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0],1),dtype=torch.float,device="cuda")) # 每个点的初始opacity设置为0.1
+
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True)) # 启用梯度跟踪，表示为一个可学习的参数
+        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1,2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1,2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]),device="cuda")
+        self.exposure_mapping = {cam_infos.image_name : idx for idx, cam_info in enumerate(cam_infos)} # 建立字典，并使用 enumerate 创造索引
+        self.pretrained_exposures = None
+        exposure = torch.eye(3,4,device="cuda")[None].repeat(len(cam_infos),1,1)
+        self._exposure = nn.Parameter(exposure.requires_grad_(True))
+
+    def training_setup(self, training_args : OptimizationParams):
+        self.percent_dense = training_args.percent_dense
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0],1),device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0],1),device="cuda")
+
+        l = [
+            {"params" : [self._xyz],"lr":training_args.position_lr_init * self.spatial_lr_scale, "name":"xyz"},
+            {"params" : [self._features_dc], "lr":training_args.feature_lr, "name":"f_dc"},
+            {"params" : [self._features_rest], "lr":training_args.feature_lr / 20.0, "name":"f_rest"},
+            {"params" : [self._opacity], "lr":training_args.opacity_lr, "name":"opacity"},
+            {"params" : [self._scaling], "lr":training_args.scaling_lr, "name":"scaling"},
+            {"params" : [self._rotation], "lr":training_args.rotation_lr, "name":"rotation"}
+        ]
+
+        if self.optimizer_type == "default":
+            self.optimizer = torch.optim.Adam(l,lr=0.0,eps=1e-15)
+        elif self.optimizer_type == "sparse_adam":
+            try:
+                self.optimizer = SparseGaussianAdam(l,lr=0.0,eps=1e-15)
+            except:
+                self.optimizer = torch.optim.Adam(l,lr=0.0,eps=1e-15)
+
+        self.exposure_optimizer = torch.optim.Adam([self._exposure]) # 默认值 lr = 1e-3 eps = 1e-8
+
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init * self.spatial_lr_scale,
+                                                    lr_final=training_args.exposure_lr_final * self.spatial_lr_scale,
+                                                    lr_delay_mult=training_args.position_lr_delay_mult,
+                                                    max_steps=training_args.position_lr_max_steps
+                                                    )
+
+        self.exposure_scheduler_args = get_expon_lr_func(training_args.exposure_lr_init,training_args.exposure_lr_final,
+                                                         lr_delay_steps=training_args.exposure_lr_delay_steps,
+                                                         lr_delay_mult=training_args.exposure_lr_delay_mult,
+                                                         max_steps=training_args.iterations)
